@@ -1,2 +1,11 @@
-@import 'tailwindcss';
-@plugin '@tailwindcss/forms';
+/* Import Tailwind's base, components, and utilities layers */
+@import "tailwindcss/preflight";
+@import "tailwindcss/preflight";   /* reset */
+@tailwind utilities;               /* everything else lives here */
+
+/* Set up a clean, modern base style */
+@layer base {
+  body {
+    @reference bg-gray-900 text-gray-200 antialiased;
+  }
+}
