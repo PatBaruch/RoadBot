@@ -1,11 +1,10 @@
-/* Import Tailwind's base, components, and utilities layers */
-@import "tailwindcss/preflight";
-@import "tailwindcss/preflight";   /* reset */
-@tailwind utilities;               /* everything else lives here */
+/* src/app.css */
 
-/* Set up a clean, modern base style */
-@layer base {
-  body {
-    @reference bg-gray-900 text-gray-200 antialiased;
-  }
+@tailwind base;        /* Includes Tailwind's base styles and Preflight (reset) */
+@tailwind components;  /* Includes Tailwind's component classes */
+@tailwind utilities;   /* Includes all Tailwind's utility classes */
+
+/* Add your custom global styles here, *after* the @tailwind directves */
+body {
+  @apply bg-gray-900 text-gray-200 font-sans;
 }

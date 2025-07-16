@@ -1,9 +1,6 @@
-import { sveltekit } from '@sveltejs/kit/vite';
+// vite.config.ts
 import { defineConfig } from 'vite';
-
+import { sveltekit } from '@sveltejs/kit/vite';
 export default defineConfig({
-  plugins: [sveltekit()],
-  optimizeDeps: {
-    include: ['@sveltejs/kit', 'svelte', 'svelte-preprocess']
-  }
+  plugins: [sveltekit()]         // plug-in last
 });
