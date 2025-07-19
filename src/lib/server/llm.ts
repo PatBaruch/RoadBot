@@ -40,7 +40,7 @@ export const ChatRequest = z.object({
 export async function extractEntities(
 	query: string,
 	history: TMessage[]
-): Promise<{ road?: string; category?: string }> {
+): Promise<{ roads?: string[]; categories?: string[] }> {
 	try {
 		const completion = await llm.chat.completions.create({
 			model: MODEL,
@@ -51,11 +51,12 @@ export async function extractEntities(
 					role: 'system',
 					content: `
 						You are an entity extraction expert analyzing a conversation with a traffic bot.
-						Your task is to identify the road (e.g., A4, N57) and the incident category the user is asking about, considering the full conversation history.
+						Your task is to identify the roads (e.g., A4, N57) and the incident categories the user is asking about, considering the full conversation history.
+						Pay close attention to negations. If the user says "I am NOT interested in construction", you should not extract "construction" as a category.
 						Valid categories are: "accident", "construction", "congestion", "obstruction", "weather".
 						Map user terms like "road works" or "building" to "construction". Map "jams" to "congestion".
-						Respond with a JSON object like {"road": "A58", "category": "accident"}.
-						If a value isn't found in the conversation, omit its key.
+						Respond with a JSON object like {"roads": ["A58", "A2"], "categories": ["accident"]}.
+						If a value isn't found in the conversation, omit its key. The values in the arrays should be strings.
 					`
 				},
 				...(history as OpenAI.Chat.ChatCompletionMessageParam[]),
@@ -66,8 +67,8 @@ export async function extractEntities(
 		try {
 			const result = JSON.parse(completion.choices[0].message?.content ?? '{}');
 			return {
-				road: result.road,
-				category: result.category
+				roads: result.roads,
+				categories: result.categories
 			};
 		} catch (e) {
 			console.error('Failed to parse entities from LLM response', e);
@@ -158,7 +159,7 @@ export async function answerFromIncidents(
 				{
 					role: 'system',
 					content: [
-						'You are RoadBuddy, a friendly and concise traffic assistant for drivers in the Netherlands.',
+						'You are RoadBot, a friendly and concise traffic assistant for drivers in the Netherlands.',
 						'Assume the user is traveling by car. Synthesize information from the conversation history with the user\'s latest query.',
 						'Use ONLY the real-time traffic incidents provided below to answer. Do not add external info or make things up.',
 						'Answer the user\'s question directly based on the provided data. Do not ask for information you should already have from the history (like origin/destination).',
