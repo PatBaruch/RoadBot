@@ -84,7 +84,7 @@
 					class:bg-gray-800={message.role === 'user'}
 					class:bg-blue-950={message.role === 'assistant'}
 				>
-					<p class="whitespace-pre-wrap">{message.content}</p>
+					<div class="whitespace-pre-wrap">{@html message.content}</div>
 				</div>
 			</div>
 		{/each}

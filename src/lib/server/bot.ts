@@ -3,36 +3,58 @@
  */
 
 import { fetchIncidents } from './anwb';
-import { extractEntities, answerFromIncidents, nonTrafficReply, type TMessage } from './llm';
+import {
+	extractEntities,
+	answerFromIncidents,
+	nonTrafficReply,
+	summarizeIncidentsForRoute,
+	type TMessage
+} from './llm';
 
 // Regular expression to detect simple greetings.
 const greetingRE = /^(hi|hello|hey|hallo|good\s(morning|afternoon|evening))\b/i;
 
-// Regular expressions to determine if a query is about traffic.
-const roadRE = /\b([ABN]\d{1,3})\b/i;
-const categoryRE = /(accident|construction|road ?works?|congestion|delay|obstruction|weather)/i;
-const trafficKeywordsRE = /traffic|road|route|drive|driving|incident|closure|jam|delay|blockage/i;
-
-const specificTrafficRE = new RegExp(roadRE.source + '|' + categoryRE.source, 'i');
-
 /**
- * Checks if a given text is likely related to traffic.
- * This is a quick, preliminary check before sending to the more powerful LLM.
- * @param text The text to check.
- * @returns True if the text seems to be about traffic.
+ * Pre-processes the user's query to handle common synonyms or specific mappings
+ * before sending it to the LLM for entity extraction.
+ * @param query The raw user query.
+ * @returns The pre-processed query.
  */
-function isTraffic(text: string): boolean {
-	return specificTrafficRE.test(text) || trafficKeywordsRE.test(text);
+export function preprocessQuery(query: string, history: TMessage[]): string {
+	let processedQuery = query;
+
+	// Explicitly map common user terms to the exact categories the bot understands.
+	processedQuery = processedQuery.replace(/\bjams\b/gi, 'congestion');
+	processedQuery = processedQuery.replace(/\broad\s?works?\b|\bbuilding\b/gi, 'construction');
+	processedQuery = processedQuery.replace(/\bproblems\b|\bissues\b|\binconveniences\b|\bdisruptions\b/gi, 'all_categories');
+	processedQuery = processedQuery.replace(/\b(on\s+roads?|everywhere|general|overall)\b/gi, 'all_categories');
+
+	return processedQuery;
 }
 
 /**
- * Checks if a traffic-related query is specific enough to provide a direct answer
- * or if the bot should ask for clarification.
- * @param text The text to check.
- * @returns True if the query contains a road number or an incident category.
+ * Simple heuristic to check if an incident is potentially on a route.
+ * This is NOT a full routing algorithm, but checks for common highways between major cities.
+ * @param incident The traffic incident object.
+ * @param origin The origin city/location.
+ * @param destination The destination city/location.
+ * @returns True if the incident's road is likely on the route, false otherwise.
  */
-function isSpecificEnough(text: string): boolean {
-	return specificTrafficRE.test(text);
+function isIncidentOnRoute(incident: any, origin: string, destination: string): boolean {
+	const routeMap: { [key: string]: string[] } = {
+		'vlissingen-amsterdam': ['A58', 'A4', 'A2', 'A10', 'N57', 'N59'], // Common highways
+		'amsterdam-rotterdam': ['A4', 'A2', 'A13'],
+		// Add more common routes and their associated highways here
+	};
+
+	const normalizedOrigin = origin.toLowerCase().trim();
+	const normalizedDestination = destination.toLowerCase().trim();
+	const routeKey = `${normalizedOrigin}-${normalizedDestination}`;
+
+	const relevantRoads = routeMap[routeKey] || [];
+
+	// Check if the incident's road is in our list of relevant roads for this route
+	return relevantRoads.includes(incident.road.toUpperCase());
 }
 
 /**
@@ -49,43 +71,55 @@ export async function getReply(query: string, history: TMessage[] = []): Promise
 		return "I didn't receive a message. Please try again.";
 	}
 
-	// 2. Determine if the conversation is about traffic.
-	// We only check the user's last query for keywords.
-	// The full history is used by the LLM later on.
-	if (isTraffic(q)) {
-		// This is a traffic-related query.
+	// 2. Handle simple greetings before doing any complex logic.
+	if (greetingRE.test(q)) {
+		return 'Hello! How can I assist you with traffic information today?';
+	}
 
-		// a. Check if the query is specific enough.
-		if (!isSpecificEnough(q)) {
-			return 'I can see you are asking about traffic. To give you the best information, could you please specify a road number (e.g., A12) or a type of incident (e.g., construction, congestion)?';
-		}
+	// Pre-process the query before sending it to the LLM.
+	const processedQuery = preprocessQuery(q, history);
 
-		// b. Use the LLM to extract specific details like road names or incident types.
-		const entities = await extractEntities(q, history);
+	// 3. Use the LLM to understand the user's intent by extracting entities.
+	const entities = await extractEntities(processedQuery, history);
+	console.log('Extracted Entities:', entities);
 
-		// c. Fetch all current traffic incidents from the ANWB API.
-		const allIncidents = await fetchIncidents();
+	// 4. Fetch all current traffic incidents from the ANWB API.
+	// We do this now so we have the data ready for any traffic-related intent.
+	const allIncidents = await fetchIncidents();
 
-		// d. Filter the incidents based on what the user asked for.
+	// 5. Decide what to do based on the extracted entities.
+
+	// Case 1: The user is asking about a specific road or incident type.
+	if (entities.roads || entities.categories) {
 		let relevantIncidents = allIncidents;
 		if (entities.roads && entities.roads.length > 0) {
 			const roadSet = new Set(entities.roads.map((r) => r.toUpperCase()));
 			relevantIncidents = relevantIncidents.filter((i) => roadSet.has(i.road.toUpperCase()));
 		}
 		if (entities.categories && entities.categories.length > 0) {
-			const categorySet = new Set(entities.categories);
+			let categoriesToFilter = entities.categories;
+			// If 'all_categories' was requested, expand it to all valid categories.
+			if (categoriesToFilter.includes('all_categories')) {
+				categoriesToFilter = ['accident', 'construction', 'congestion', 'obstruction', 'weather'];
+			}
+			const categorySet = new Set(categoriesToFilter);
 			relevantIncidents = relevantIncidents.filter((i) => categorySet.has(i.category));
 		}
-
-		// e. Use the LLM to generate a natural language answer from the filtered incidents.
-		return await answerFromIncidents(q, relevantIncidents, history);
+		return await answerFromIncidents(q, relevantIncidents, history, entities);
 	}
 
-	// 3. Handle simple greetings.
-	if (greetingRE.test(q)) {
-		return 'Hello! How can I assist you with traffic information today?';
+	// Case 2: The user is asking for a route between two places.
+	if (entities.origin && entities.destination) {
+		const relevantIncidents = allIncidents.filter((inc) =>
+			isIncidentOnRoute(inc, entities.origin!, entities.destination!)
+		);
+		return await summarizeIncidentsForRoute(
+			relevantIncidents,
+			entities.origin!,
+			entities.destination!
+		);
 	}
 
-	// 4. If it's not about traffic, let the LLM handle it as a general chat.
+	// Case 3: If no specific intent is found, handle as a general chat.
 	return await nonTrafficReply(q, history);
 }
