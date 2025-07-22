@@ -1,6 +1,6 @@
 /**
- * This file handles all interactions with the Language Model (LLM).
- * It is responsible for understanding user queries and generating natural language responses.
+ * Manages all interactions with the Large Language Model (LLM).
+ * This module is responsible for interpreting user queries and generating natural language responses.
  */
 
 import { env } from '$env/dynamic/private';
@@ -8,8 +8,9 @@ import OpenAI from 'openai';
 import { z } from 'zod';
 import type { Clean } from './anwb';
 
-// --- SETUP ---
-// Initialize the connection to the LLM with our API key.
+// --- LLM Configuration ---
+// Establishes the connection to the LLM provider (Groq API) using the API key.
+// Defines the specific model for generation and a default refusal message for irrelevant queries.
 const GROQ_API_KEY = env.GROQ_API_KEY;
 if (!GROQ_API_KEY) throw new Error('Missing GROQ_API_KEY');
 
@@ -17,8 +18,9 @@ const llm = new OpenAI({ apiKey: GROQ_API_KEY, baseURL: 'https://api.groq.com/op
 const MODEL = 'llama3-8b-8192';
 const REFUSAL = 'I can only answer questions related to traffic.';
 
-// --- SCHEMAS ---
-// Define the structure for messages and requests for type safety.
+// --- Data Schemas ---
+// Defines the data structures for chat messages and requests.
+// Zod is used for robust data validation and type safety.
 export const Message = z.object({
 	role: z.enum(['user', 'assistant']),
 	content: z.string()
@@ -30,8 +32,9 @@ export const ChatRequest = z.object({
 	history: z.array(Message).optional()
 });
 
-// --- PROMPTS ---
-// Storing prompts in constants makes the main functions cleaner and easier to read.
+// --- Prompt Engineering ---
+// Contains the system prompts that instruct the LLM on how to perform specific tasks.
+// Isolating prompts improves code clarity and maintainability.
 
 const EXTRACT_ENTITIES_PROMPT = `
 	Your task is to identify roads (e.g., A4, N57), and incident categories from the user's query. The valid categories are: "accident", "construction", "congestion", "obstruction", "weather". When identifying categories, you MUST use these exact terms. Also identify origin and destination. Consider the full conversation history.
@@ -51,26 +54,9 @@ const ANSWER_INCIDENTS_PROMPT = `
 const NON_TRAFFIC_PROMPT =
 	'You are a friendly chat assistant for a Dutch road-status app. Your ONLY expertise is reporting on real-time traffic INCIDENTS (like jams, construction, accidents) in the Netherlands. You CANNOT provide route planning or travel time estimations. For any queries about routes or travel times (e.g., "how long from A to B?"), you MUST state that you cannot provide travel times and can only report on specific incidents. For queries outside the Netherlands, state that you only have data for the Netherlands. Be helpful, but DO NOT invent information or perform functions you are not designed for.';
 
-const SUMMARIZE_ROUTE_INCIDENTS_PROMPT = `Given the user's query for a route from [origin] to [destination] and the following traffic data:
-
-Your ONLY task is to provide a JSON response.
-
-CRITICAL RULES:
-- If there are relevant incidents in the provided data, respond with a JSON object like: {"status": "incidents", "summary": "[concise markdown summary of relevant incidents]"}.
-- If there are NO relevant incidents found in the provided data, respond ONLY with the JSON object: {"status": "clear"}.
-- DO NOT add any conversational filler, greetings, route suggestions, travel time estimates, or any other information.
-- DO NOT mention geographic limitations unless the user's query explicitly involves locations outside the Netherlands.
-`;
-
-// --- REUSABLE LLM HELPER ---
-/**
- * A single, reusable function to call the LLM. This avoids repeating code.
- * @param systemPrompt The specific instructions for the AI's persona and task.
- * @param messages The conversation history and the user's query.
- * @param temperature How creative the AI should be (0 = factual, >0 = creative).
- * @param isJsonMode Whether to force the AI to reply in JSON format.
- * @returns The AI's response content as a string.
- */
+// --- Core LLM Interaction ---
+// A centralized function for making requests to the LLM.
+// This abstraction simplifies API calls and centralizes error handling.
 async function callLLM(
 	systemPrompt: string,
 	messages: TMessage[],
@@ -90,15 +76,14 @@ async function callLLM(
 		return completion.choices[0].message?.content ?? '';
 	} catch (e) {
 		console.error('Error calling LLM:', e);
-		// Return a generic error message that can be shown to the user.
+		// Return a generic error message to the user upon failure.
 		return 'Sorry, I am having trouble connecting to the AI service right now.';
 	}
 }
 
-// --- CORE FUNCTIONS (Now much simpler!) ---
-
 /**
- * "The Detective": Extracts structured data (entities) from a user's query.
+ * Extracts structured data (entities) from a user's query.
+ * Identifies key information like road numbers, incident categories, origin, and destination.
  */
 export async function extractEntities(
 	query: string,
@@ -108,51 +93,39 @@ export async function extractEntities(
 	const jsonResponse = await callLLM(EXTRACT_ENTITIES_PROMPT, messages, 0, true);
 
 	try {
-		// Safely parse the JSON response from the AI.
+		// Safely parse the JSON response from the LLM.
 		return JSON.parse(jsonResponse);
 	} catch (e) {
 		console.error('Failed to parse entities from LLM JSON response', e);
-		return {}; // Return empty object on failure.
+		// On failure, return an empty object to prevent downstream errors.
+		return {};
 	}
 }
 
 /**
- * "The Journalist": Generates a natural language answer from a list of traffic incidents.
+ * Generates a natural language response based on a provided list of traffic incidents.
+ * It uses the data to answer the user's query in a conversational format.
  */
 export async function answerFromIncidents(
 	userQuery: string,
 	incidents: Clean[],
-	history: TMessage[],
-	entities: { roads?: string[]; categories?: string[]; origin?: string; destination?: string }
+	history: TMessage[]
 ): Promise<string> {
 	if (incidents.length === 0) {
-		const hasRoads = entities.roads && entities.roads.length > 0;
-		const hasCategories = entities.categories && entities.categories.length > 0;
-
-		if (hasRoads && hasCategories) {
-			return `I couldn\'t find any ${entities.categories.join(' and ')} incidents on ${entities.roads.join(' and ')} at this time. Would you like me to check for all types of incidents on ${entities.roads.join(' and ')}?`;
-		} else if (hasCategories) {
-			return `I couldn\'t find any ${entities.categories.join(' and ')} incidents at this time. Would you like me to list all ${entities.categories.join(' and ')} incidents in the Netherlands?`;
-		} else if (hasRoads) {
-			return `I couldn\'t find any reported incidents for your request about "${userQuery}" on ${entities.roads.join(' and ')} at this time. The route appears clear. However, I can check for all types of incidents on ${entities.roads.join(' and ')}.`;
-		} else {
-			return `I couldn\'t find any reported incidents for your request about "${userQuery}" at this time. The route appears clear. However, I can provide a general overview of all current traffic incidents in the Netherlands.`;
-		}
+		return `I couldn't find any reported incidents for your request about "${userQuery}" at this time. The roads appear to be clear.`;
 	}
 
-	// Format the incident data into a clean markdown list for the AI to read.
+	// Format the incident data into a markdown list for the LLM.
 	const incidentMarkdown = markdownFromGroups(groupByCategory(incidents));
-	const systemPromptWithData = `${ANSWER_INCIDENTS_PROMPT}
-
-LATEST TRAFFIC DATA:
-${incidentMarkdown}`;
+	const systemPromptWithData = `${ANSWER_INCIDENTS_PROMPT}\n\nLATEST TRAFFIC DATA:\n${incidentMarkdown}`;
 	const messages: TMessage[] = [...history, { role: 'user', content: userQuery }];
 
 	return callLLM(systemPromptWithData, messages, 0);
 }
 
 /**
- * "The Friendly Chatbot": Generates a reply for a non-traffic-related query.
+ * Generates a helpful response for queries that are not related to traffic.
+ * This ensures the bot stays on-topic and gracefully handles irrelevant questions.
  */
 export async function nonTrafficReply(query: string, history: TMessage[]): Promise<string> {
 	const messages: TMessage[] = [...history, { role: 'user', content: query }];
@@ -160,7 +133,8 @@ export async function nonTrafficReply(query: string, history: TMessage[]): Promi
 }
 
 /**
- * "The Route Analyst": Intelligently filters and summarizes incidents for a given route.
+ * Summarizes relevant traffic incidents for a specified route.
+ * Filters a list of incidents and provides a concise overview for the user.
  */
 export async function summarizeIncidentsForRoute(
 	incidents: Clean[],
@@ -172,17 +146,14 @@ export async function summarizeIncidentsForRoute(
 	}
 
 	const incidentMarkdown = markdownFromGroups(groupByCategory(incidents));
-	const systemPromptWithData = `You are RoadBuddy, a traffic assistant. Summarize the following traffic incidents for a route from ${origin} to ${destination}. Be concise and factual. Do not add any conversational filler or route suggestions.
-
-LATEST TRAFFIC DATA:
-${incidentMarkdown}`;
+	const systemPromptWithData = `You are RoadBuddy, a traffic assistant. Summarize the following traffic incidents for a route from ${origin} to ${destination}. Be concise and factual. Do not add any conversational filler or route suggestions.\n\nLATEST TRAFFIC DATA:\n${incidentMarkdown}`;
 	const messages: TMessage[] = [{ role: 'user', content: `Route from ${origin} to ${destination}` }];
 
 	return callLLM(systemPromptWithData, messages, 0);
 }
 
-// --- DATA FORMATTING HELPERS ---
-// These functions are not directly related to the LLM calls, but prepare data for it.
+// --- Data Formatting Utilities ---
+// Utility functions for structuring and formatting data before sending it to the LLM.
 
 export function groupByCategory(list: Clean[]) {
 	return list.reduce<Record<Clean['category'], Clean[]>>(
@@ -194,6 +165,11 @@ export function groupByCategory(list: Clean[]) {
 	);
 }
 
+/**
+ * Formats categorized incidents into a structured Markdown list.
+ * @param groups A record of incident arrays, keyed by category.
+ * @returns A single Markdown string of the formatted incidents.
+ */
 export function markdownFromGroups(groups: Record<string, Clean[]>): string {
 	const order = ['accident', 'construction', 'congestion', 'obstruction', 'weather', 'other'];
 	const labels: Record<string, string> = {

@@ -6,7 +6,7 @@ import { z } from 'zod';
 import { error } from '@sveltejs/kit';
 import { env } from '$env/dynamic/private';
 
-// Get the ANWB API key from the environment variables.
+// Get the ANWB API key from environment variables.
 const ANWB_API_KEY = env.ANWB_API_KEY;
 if (!ANWB_API_KEY) throw new Error('Missing ANWB_API_KEY');
 
@@ -36,6 +36,7 @@ export type Clean = z.infer<typeof CleanIncident>;
 
 /**
  * Classifies a raw incident from the ANWB API into one of our defined categories.
+ * This helps standardize the data we get from the API.
  * @param raw The raw incident data.
  * @param bucket The type of incident (e.g., traffic jam, road work).
  * @returns The category of the incident.
@@ -52,6 +53,7 @@ function classify(raw: any, bucket: 'trafficJams' | 'roadWorks' | 'radars'): Cle
 
 /**
  * Converts a raw incident from the ANWB API into our clean, simplified format.
+ * This function extracts relevant details and applies our classification.
  * @param raw The raw incident data.
  * @param bucket The type of incident.
  * @param road The road the incident is on.
@@ -88,7 +90,8 @@ let cache: { ts: number; data: Clean[] } | null = null;
 
 /**
  * Fetches the latest traffic incidents from the ANWB API.
- * It gets all the raw data and converts it into a simple, clean list.
+ * This function gets all the raw data and converts it into a simple, clean list.
+ * It also uses a cache to avoid too many API calls.
  * @returns A promise that resolves to an array of clean incident objects.
  */
 export async function fetchIncidents(): Promise<Clean[]> {

@@ -11,16 +11,17 @@ import {
 	type TMessage
 } from './llm';
 
-// Regular expression to detect simple greetings.
+// Simple regex to catch common greetings. Helps us respond quickly without hitting the LLM.
 const greetingRE = /^(hi|hello|hey|hallo|good\s(morning|afternoon|evening))\b/i;
 
 /**
- * Pre-processes the user's query to handle common synonyms or specific mappings
- * before sending it to the LLM for entity extraction.
- * @param query The raw user query.
- * @returns The pre-processed query.
+ * Cleans up the user's query by replacing synonyms with standardized terms.
+ * This makes it easier for the LLM to understand the user's intent.
+ * For example, "jams" becomes "congestion".
+ * @param query The raw user's message.
+ * @returns The cleaned-up query string.
  */
-export function preprocessQuery(query: string, history: TMessage[]): string {
+export function preprocessQuery(query: string): string {
 	let processedQuery = query;
 
 	// Explicitly map common user terms to the exact categories the bot understands.
@@ -33,12 +34,12 @@ export function preprocessQuery(query: string, history: TMessage[]): string {
 }
 
 /**
- * Simple heuristic to check if an incident is potentially on a route.
- * This is NOT a full routing algorithm, but checks for common highways between major cities.
+ * A simple check to see if a traffic incident is likely on a given route.
+ * This isn't a full routing engine, just a quick way to filter incidents for common highways between cities.
  * @param incident The traffic incident object.
- * @param origin The origin city/location.
- * @param destination The destination city/location.
- * @returns True if the incident's road is likely on the route, false otherwise.
+ * @param origin The starting city/location.
+ * @param destination The ending city/location.
+ * @returns True if the incident's road is probably on the route, false otherwise.
  */
 function isIncidentOnRoute(incident: any, origin: string, destination: string): boolean {
 	const routeMap: { [key: string]: string[] } = {
@@ -58,10 +59,12 @@ function isIncidentOnRoute(incident: any, origin: string, destination: string): 
 }
 
 /**
- * Main function to handle a user's query and generate a reply.
+ * The main function that takes a user's message and generates the bot's reply.
+ * It orchestrates everything: processing the query, understanding intent with the LLM,
+ * fetching traffic data, and deciding how to respond.
  * @param query The user's latest message.
- * @param history The previous messages in the conversation.
- * @returns A string containing the bot's reply.
+ * @param history The previous messages in the conversation, for context.
+ * @returns A promise that resolves to the bot's reply as a string.
  */
 export async function getReply(query: string, history: TMessage[] = []): Promise<string> {
 	const q = query.trim();
@@ -77,49 +80,53 @@ export async function getReply(query: string, history: TMessage[] = []): Promise
 	}
 
 	// Pre-process the query before sending it to the LLM.
-	const processedQuery = preprocessQuery(q, history);
+	const processedQuery = preprocessQuery(q);
 
 	// 3. Use the LLM to understand the user's intent by extracting entities.
 	const entities = await extractEntities(processedQuery, history);
-	console.log('Extracted Entities:', entities);
 
 	// 4. Fetch all current traffic incidents from the ANWB API.
 	// We do this now so we have the data ready for any traffic-related intent.
-	const allIncidents = await fetchIncidents();
+	try {
+		const allIncidents = await fetchIncidents();
 
-	// 5. Decide what to do based on the extracted entities.
+		// 5. Decide what to do based on the extracted entities.
 
-	// Case 1: The user is asking about a specific road or incident type.
-	if (entities.roads || entities.categories) {
-		let relevantIncidents = allIncidents;
-		if (entities.roads && entities.roads.length > 0) {
-			const roadSet = new Set(entities.roads.map((r) => r.toUpperCase()));
-			relevantIncidents = relevantIncidents.filter((i) => roadSet.has(i.road.toUpperCase()));
-		}
-		if (entities.categories && entities.categories.length > 0) {
-			let categoriesToFilter = entities.categories;
-			// If 'all_categories' was requested, expand it to all valid categories.
-			if (categoriesToFilter.includes('all_categories')) {
-				categoriesToFilter = ['accident', 'construction', 'congestion', 'obstruction', 'weather'];
+		// Case 1: The user is asking about a specific road or incident type.
+		if (entities.roads || entities.categories) {
+			let relevantIncidents = allIncidents;
+			if (entities.roads && entities.roads.length > 0) {
+				const roadSet = new Set(entities.roads.map((r) => r.toUpperCase()));
+				relevantIncidents = relevantIncidents.filter((i) => roadSet.has(i.road.toUpperCase()));
 			}
-			const categorySet = new Set(categoriesToFilter);
-			relevantIncidents = relevantIncidents.filter((i) => categorySet.has(i.category));
+			if (entities.categories && entities.categories.length > 0) {
+				let categoriesToFilter = entities.categories;
+				// If 'all_categories' was requested, expand it to all valid categories.
+				if (categoriesToFilter.includes('all_categories')) {
+					categoriesToFilter = ['accident', 'construction', 'congestion', 'obstruction', 'weather'];
+				}
+				const categorySet = new Set(categoriesToFilter);
+				relevantIncidents = relevantIncidents.filter((i) => categorySet.has(i.category));
+			}
+			return await answerFromIncidents(q, relevantIncidents, history);
 		}
-		return await answerFromIncidents(q, relevantIncidents, history, entities);
-	}
 
-	// Case 2: The user is asking for a route between two places.
-	if (entities.origin && entities.destination) {
-		const relevantIncidents = allIncidents.filter((inc) =>
-			isIncidentOnRoute(inc, entities.origin!, entities.destination!)
-		);
-		return await summarizeIncidentsForRoute(
-			relevantIncidents,
-			entities.origin!,
-			entities.destination!
-		);
-	}
+		// Case 2: The user is asking for a route between two places.
+		if (entities.origin && entities.destination) {
+			const relevantIncidents = allIncidents.filter((inc) =>
+				isIncidentOnRoute(inc, entities.origin!, entities.destination!)
+			);
+			return await summarizeIncidentsForRoute(
+				relevantIncidents,
+				entities.origin!,
+				entities.destination!
+			);
+		}
 
-	// Case 3: If no specific intent is found, handle as a general chat.
-	return await nonTrafficReply(q, history);
+		// Case 3: If no specific intent is found, handle as a general chat.
+		return await nonTrafficReply(q, history);
+	} catch (error) {
+		console.error('Error fetching incidents:', error);
+		return 'Sorry, I am having trouble connecting to the traffic data service right now.';
+	}
 }

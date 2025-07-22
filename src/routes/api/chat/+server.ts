@@ -1,6 +1,6 @@
 /**
- * This file defines the API endpoint for the chatbot.
- * It handles the web request and response, but the core logic is in bot.ts.
+ * @file Defines the API endpoint for the chatbot, handling incoming requests and orchestrating the bot's response.
+ * This module acts as the entry point for client-side chat interactions, delegating core logic to `bot.ts`.
  */
 
 import { json, type RequestHandler } from '@sveltejs/kit';
